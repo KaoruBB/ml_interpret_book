@@ -1,0 +1,446 @@
+* 2. 線形回帰モデルを通して「解釈性」を理解する
+:PROPERTIES:
+:header-args:jupyter-python: :exports both :session ml :kernel ml_interpret :async yes :tangle yes
+:CUSTOM_ID: 線形回帰モデルを通して解釈性を理解する
+:END:
+** 2.3.1 データの読み込み
+#+begin_src jupyter-python :exports both
+import sys
+import warnings
+from dataclasses import dataclass
+from typing import Any  # 型ヒント用
+from __future__ import annotations  # 型ヒント用
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import japanize_matplotlib  # matplotlibの日本語表示対応
+
+# 自作モジュール
+sys.path.append("..")
+from mli.visualize import get_visualization_setting
+
+np.random.seed(42)
+pd.options.display.float_format = "{:.2f}".format
+sns.set(**get_visualization_setting())
+warnings.simplefilter("ignore")  # warningsを非表示に
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both :results output
+# from sklearn.datasets import load_boston # deprecated
+# boston = load_boston()
+
+data_url = "https://raw.githubusercontent.com/selva86/datasets/refs/heads/master/BostonHousing.csv"
+boston = pd.read_csv(data_url)
+print(boston.head(2))
+#+end_src
+
+#+RESULTS:
+:    crim    zn  indus  chas  nox   rm   age  dis  rad  tax  ptratio      b  \
+: 0  0.01 18.00   2.31     0 0.54 6.58 65.20 4.09    1  296    15.30 396.90
+: 1  0.03  0.00   7.07     0 0.47 6.42 78.90 4.97    2  242    17.80 396.90
+:
+:    lstat  medv
+: 0   4.98 24.00
+: 1   9.14 21.60
+
+#+begin_src jupyter-python
+# 教科書に合わせて変数名を全て大文字に変更
+boston.columns = boston.columns.str.upper()
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+# データセットの読み込み
+
+# データセットはdictで与えられる
+# dataに特徴量が、targetに目的変数が格納されている
+# X = pd.DataFrame(data=boston["data"], columns=boston["feature_names"])
+# y = boston["target"]
+X = boston.drop("MEDV", axis=1)
+y = boston["MEDV"]
+#+end_src
+
+#+RESULTS:
+
+** 2.3.2 データの前処理
+#+begin_src jupyter-python :exports both :file ./images/2-3-2-1.png :results output file
+def plot_histogram(x, title=None, x_label=None):
+    """与えられた特徴量のヒストグラムを作成"""
+    
+    fig, ax = plt.subplots()
+    sns.distplot(x, kde=False, ax=ax)
+    fig.suptitle(title)
+    ax.set_xlabel(x_label)
+
+    fig.show()
+
+
+plot_histogram(y, title="目的変数の分布", x_label="MEDV")
+#+end_src
+
+#+RESULTS:
+[[file:./images/2-3-2-1.png]]
+
+
+#+begin_src jupyter-python :exports both
+# 特徴量を出力
+print(X.head())
+#+end_src
+
+#+RESULTS:
+#+begin_example
+   CRIM    ZN  INDUS  CHAS  NOX   RM   AGE  DIS  RAD  TAX  PTRATIO      B  \
+0  0.01 18.00   2.31     0 0.54 6.58 65.20 4.09    1  296    15.30 396.90
+1  0.03  0.00   7.07     0 0.47 6.42 78.90 4.97    2  242    17.80 396.90
+2  0.03  0.00   7.07     0 0.47 7.18 61.10 4.97    2  242    17.80 392.83
+3  0.03  0.00   2.18     0 0.46 7.00 45.80 6.06    3  222    18.70 394.63
+4  0.07  0.00   2.18     0 0.46 7.15 54.20 6.06    3  222    18.70 396.90
+
+   LSTAT
+0   4.98
+1   9.14
+2   4.03
+3   2.94
+4   5.33
+#+end_example
+
+このエラーを直して:
+
+#+begin_src jupyter-python :exports both :file ./images/2-3-2-2.png :results output file
+def plot_scatters(X, y, title=None):
+    """目的変数と特徴量の散布図を作成"""
+    
+    cols = X.columns
+    fig, axes = plt.subplots(nrows=2, ncols=2)
+
+    for ax, c in zip(axes.ravel(), cols):
+        sns.scatterplot(x=X[c], y=y, ax=ax)
+        ax.set(ylabel="MEDV")
+
+    fig.suptitle(title)
+    
+    fig.show()
+
+
+plot_scatters(
+    X[["RM", "LSTAT", "DIS", "CRIM"]], 
+    y, 
+    title="目的変数と各特徴量の関係"
+)
+#+end_src
+
+#+RESULTS:
+[[file:./images/2-3-2-2.png]]
+
+** 2.3.3 線形モデルの学習と評価
+#+begin_src jupyter-python :exports both
+from sklearn.model_selection import train_test_split
+import joblib  # pickleデータの書き出しと読み込み
+
+
+# 訓練データとテストデータに分割
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# 後で使えるようにデータを書き出しておく
+joblib.dump(
+    [X_train, X_test, y_train, y_test], 
+    filename="../data/boston_housing.pkl"
+)
+#+end_src
+
+#+RESULTS:
+| ../data/boston_housing.pkl |
+
+#+begin_src jupyter-python :exports both :results none
+from sklearn.linear_model import LinearRegression
+
+
+# 学習
+lm = LinearRegression()
+lm.fit(X_train, y_train)
+#+end_src
+
+#+RESULTS:
+
+** 2.3.4 予測誤差の計算
+#+begin_src jupyter-python :exports both
+from sklearn.metrics import mean_squared_error, r2_score
+
+
+def regression_metrics(estimator, X, y):
+    """回帰精度の評価指標をまとめて返す関数"""
+
+    # テストデータで予測
+    y_pred = estimator.predict(X)
+
+    # 評価指標をデータフレームにまとめる
+    df = pd.DataFrame(
+        data={
+            "RMSE": [mean_squared_error(y, y_pred, squared=False)],
+            "R2": [r2_score(y, y_pred)],
+        }
+    )
+
+    return df
+
+
+# 精度評価
+print(regression_metrics(lm, X_test, y_test))
+#+end_src
+
+#+RESULTS:
+:    RMSE   R2
+: 0  4.93 0.67
+
+** 2.3.5 線形回帰モデルの解釈
+
+#+begin_src jupyter-python :exports both
+def get_coef(estimator, var_names):
+    """特徴量名と回帰係数が対応したデータフレームを作成する"""
+    
+    # 切片含む回帰係数と特徴量の名前を抜き出してデータフレームにまとめる
+    df = pd.DataFrame(
+        data={"coef": [estimator.intercept_] + estimator.coef_.tolist()}, 
+        index=["intercept"] + var_names
+    )
+    
+    return df
+
+
+# 回帰係数の取り出し
+df_coef = get_coef(lm, X.columns.tolist())
+print(df_coef.T)
+#+end_src
+
+#+RESULTS:
+:       intercept  CRIM   ZN  INDUS  CHAS    NOX   RM   AGE   DIS  RAD   TAX  \
+: coef      30.25 -0.11 0.03   0.04  2.78 -17.20 4.44 -0.01 -1.45 0.26 -0.01
+:
+:       PTRATIO    B  LSTAT
+: coef    -0.92 0.01  -0.51
+
+#+begin_src jupyter-python :exports both
+# 元のデータを上書きしないようにコピーしておく
+X_train2 = X_train.copy()
+X_test2 = X_test.copy()
+
+# 2乗項を追加
+X_train2["LSTAT2"] = X_train2["LSTAT"] ** 2
+X_test2["LSTAT2"] = X_test2["LSTAT"] ** 2
+
+# 学習
+lm2 = LinearRegression()
+lm2.fit(X_train2, y_train)
+
+# 精度評価
+print(regression_metrics(lm2, X_test2, y_test))
+#+end_src
+
+#+RESULTS:
+:    RMSE   R2
+: 0  4.22 0.76
+
+#+begin_src jupyter-python :exports both
+# 2乗項を追加した場合の回帰係数を出力
+df_coef2 = get_coef(lm2, X_train2.columns.tolist())
+print(df_coef2.T)
+#+end_src
+
+#+RESULTS:
+:       intercept  CRIM   ZN  INDUS  CHAS    NOX   RM  AGE   DIS  RAD   TAX  \
+: coef      40.16 -0.13 0.01   0.05  2.48 -15.91 3.44 0.02 -1.26 0.26 -0.01
+:
+:       PTRATIO    B  LSTAT  LSTAT2
+: coef    -0.79 0.01  -1.72    0.03
+
+
+#+begin_src jupyter-python :exports both
+# データを出力
+print(X_test2.head())
+#+end_src
+
+#+RESULTS:
+#+begin_example
+     CRIM    ZN  INDUS  CHAS  NOX   RM   AGE  DIS  RAD  TAX  PTRATIO      B  \
+173  0.09  0.00   4.05     0 0.51 6.42 84.10 2.65    5  296    16.60 395.50
+274  0.06 40.00   6.41     1 0.45 6.76 32.90 4.08    4  254    17.60 396.90
+491  0.11  0.00  27.74     0 0.61 5.98 98.80 1.87    4  711    20.10 390.11
+72   0.09  0.00  10.81     0 0.41 6.07  7.80 5.29    4  305    19.20 390.91
+452  5.09  0.00  18.10     0 0.71 6.30 91.80 2.37   24  666    20.20 385.09
+
+     LSTAT  LSTAT2
+173   9.04   81.72
+274   3.53   12.46
+491  18.07  326.52
+72    5.52   30.47
+452  17.27  298.25
+#+end_example
+
+#+begin_src jupyter-python :exports both
+def calc_lstat_impact(df, lstat):
+    """LSTATが１単位増加したときに予測値に与える影響"""
+
+    return (df.loc["LSTAT"] + 2 * df.loc["LSTAT2"] * lstat).values[0]
+
+# インスタンス274の場合
+i = 274
+lstat = X_test2.loc[i, "LSTAT"]
+impact = calc_lstat_impact(df_coef2, lstat)
+
+print(f"インスタンス{i}でLSTATが1単位増加したときの効果(LSTAT={lstat:.2f})：{impact:.2f}")
+#+end_src
+
+#+RESULTS:
+: インスタンス274でLSTATが1単位増加したときの効果(LSTAT=3.53)：-1.48
+
+#+begin_src jupyter-python :exports both
+# インスタンス491の場合
+i = 491
+lstat = X_test2.loc[i, "LSTAT"]
+impact = calc_lstat_impact(df_coef2, lstat)
+
+print(f"インスタンス{i}でLSTATが1単位増加したときの効果(LSTAT={lstat:.2f})：{impact:.2f}")
+#+end_src
+
+#+RESULTS:
+: インスタンス491でLSTATが1単位増加したときの効果(LSTAT=18.07)：-0.50
+
+#+begin_src jupyter-python :exports both
+# 回帰係数を出力
+print(df_coef.T)
+#+end_src
+
+#+RESULTS:
+:       intercept  CRIM   ZN  INDUS  CHAS    NOX   RM   AGE   DIS  RAD   TAX  \
+: coef      30.25 -0.11 0.03   0.04  2.78 -17.20 4.44 -0.01 -1.45 0.26 -0.01
+:
+:       PTRATIO    B  LSTAT
+: coef    -0.92 0.01  -0.51
+
+
+#+begin_src jupyter-python :exports both
+# 特徴量ごとの値の範囲を知るため、最大値と最小値の差分を確認
+df_range = pd.DataFrame(data={"range": X_train.max() - X_train.min()})
+print(df_range.T)
+#+end_src
+
+#+RESULTS:
+:        CRIM     ZN  INDUS  CHAS  NOX   RM   AGE   DIS   RAD    TAX  PTRATIO  \
+: range 88.97 100.00  27.00  1.00 0.49 4.92 97.10 11.00 23.00 524.00     9.40
+:
+:            B  LSTAT
+: range 396.58  36.24
+
+#+begin_src jupyter-python :exports both
+from sklearn.preprocessing import StandardScaler
+
+
+# 訓練データから平均と分散を計算
+ss = StandardScaler()
+ss.fit(X_train)
+
+# 標準化：平均を引いて標準偏差で割る
+X_train_ss = ss.transform(X_train)
+X_test_ss = ss.transform(X_test)
+
+# 学習
+lm_ss = LinearRegression()
+lm_ss.fit(X_train_ss, y_train)
+
+# 精度評価
+print(regression_metrics(lm_ss, X_test_ss, y_test))
+#+end_src
+
+#+RESULTS:
+:    RMSE   R2
+: 0  4.93 0.67
+
+
+#+begin_src jupyter-python :exports both
+# 標準化された回帰係数を出力
+df_coef_ss = get_coef(lm_ss, X_train.columns.tolist())
+print(df_coef_ss.T)
+#+end_src
+
+#+RESULTS:
+:       intercept  CRIM   ZN  INDUS  CHAS   NOX   RM   AGE   DIS  RAD   TAX  \
+: coef      22.80 -1.00 0.70   0.28  0.72 -2.02 3.15 -0.18 -3.08 2.25 -1.77
+:
+:       PTRATIO    B  LSTAT
+: coef    -2.04 1.13  -3.61
+
+#+begin_src jupyter-python :exports both
+# 先頭のインスタンスを取り出す
+Xi = X_test.iloc[[0]]
+
+print(f"インスタンス{Xi.index[0]}に対する予測値：{lm.predict(Xi)[0]:.2f}")
+#+end_src
+
+#+RESULTS:
+: インスタンス173に対する予測値：29.00
+
+
+#+begin_src jupyter-python :exports both
+# 回帰係数を出力
+print(df_coef.T)
+#+end_src
+
+#+RESULTS:
+:       intercept  CRIM   ZN  INDUS  CHAS    NOX   RM   AGE   DIS  RAD   TAX  \
+: coef      30.25 -0.11 0.03   0.04  2.78 -17.20 4.44 -0.01 -1.45 0.26 -0.01
+:
+:       PTRATIO    B  LSTAT
+: coef    -0.92 0.01  -0.51
+
+#+begin_src jupyter-python :exports both
+# インスタンス173の特徴量を出力
+print(Xi)
+#+end_src
+
+#+RESULTS:
+:      CRIM   ZN  INDUS  CHAS  NOX   RM   AGE  DIS  RAD  TAX  PTRATIO      B  \
+: 173  0.09 0.00   4.05     0 0.51 6.42 84.10 2.65    5  296    16.60 395.50
+:
+:      LSTAT
+: 173   9.04
+
+#+begin_src jupyter-python :exports both
+# 各特徴量の値x回帰係数
+print(Xi * df_coef.drop("intercept").values.T)
+#+end_src
+
+#+RESULTS:
+:      CRIM   ZN  INDUS  CHAS   NOX    RM   AGE   DIS  RAD   TAX  PTRATIO    B  \
+: 173 -0.01 0.00   0.16  0.00 -8.77 28.48 -0.53 -3.83 1.31 -3.15   -15.20 4.88
+:
+:      LSTAT
+: 173  -4.60
+
+** 2.3.6 Random Forestによる予測
+#+begin_src jupyter-python :exports both
+from sklearn.ensemble import RandomForestRegressor
+
+
+# Random Forestの学習
+# n_jobs=-1とすると利用可能なすべてのCPUを使って計算を並列化してくれる
+rf = RandomForestRegressor(n_jobs=-1, random_state=42)
+
+rf.fit(X_train, y_train)
+
+# モデルの書き出し
+joblib.dump(rf, "../model/boston_housing_rf.pkl")
+
+# テストデータで精度評価
+print(regression_metrics(rf, X_test, y_test))
+#+end_src
+
+#+RESULTS:
+:    RMSE   R2
+: 0  2.81 0.89
