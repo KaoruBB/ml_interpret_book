@@ -109,7 +109,6 @@ print(X.head())
 4   5.33
 #+end_example
 
-このエラーを直して:
 
 #+begin_src jupyter-python :exports both :file ./images/2-3-2-2.png :results output file
 def plot_scatters(X, y, title=None):
