@@ -39,13 +39,15 @@ print(boston.head(2))
 #+end_src
 
 #+RESULTS:
-:    crim    zn  indus  chas  nox   rm   age  dis  rad  tax  ptratio      b  \
-: 0  0.01 18.00   2.31     0 0.54 6.58 65.20 4.09    1  296    15.30 396.90
-: 1  0.03  0.00   7.07     0 0.47 6.42 78.90 4.97    2  242    17.80 396.90
-:
-:    lstat  medv
-: 0   4.98 24.00
-: 1   9.14 21.60
+#+begin_example
+   crim    zn  indus  chas  nox   rm   age  dis  rad  tax  ptratio      b  \
+0  0.01 18.00   2.31     0 0.54 6.58 65.20 4.09    1  296    15.30 396.90
+1  0.03  0.00   7.07     0 0.47 6.42 78.90 4.97    2  242    17.80 396.90
+
+   lstat  medv
+0   4.98 24.00
+1   9.14 21.60
+#+end_example
 
 #+begin_src jupyter-python
 # 教科書に合わせて変数名を全て大文字に変更
@@ -219,11 +221,13 @@ print(df_coef.T)
 #+end_src
 
 #+RESULTS:
-:       intercept  CRIM   ZN  INDUS  CHAS    NOX   RM   AGE   DIS  RAD   TAX  \
-: coef      30.25 -0.11 0.03   0.04  2.78 -17.20 4.44 -0.01 -1.45 0.26 -0.01
-:
-:       PTRATIO    B  LSTAT
-: coef    -0.92 0.01  -0.51
+#+begin_example
+      intercept  CRIM   ZN  INDUS  CHAS    NOX   RM   AGE   DIS  RAD   TAX  \
+coef      30.25 -0.11 0.03   0.04  2.78 -17.20 4.44 -0.01 -1.45 0.26 -0.01
+
+      PTRATIO    B  LSTAT
+coef    -0.92 0.01  -0.51
+#+end_example
 
 #+begin_src jupyter-python :exports both
 # 元のデータを上書きしないようにコピーしておく
@@ -369,11 +373,13 @@ print(df_coef_ss.T)
 #+end_src
 
 #+RESULTS:
-:       intercept  CRIM   ZN  INDUS  CHAS   NOX   RM   AGE   DIS  RAD   TAX  \
-: coef      22.80 -1.00 0.70   0.28  0.72 -2.02 3.15 -0.18 -3.08 2.25 -1.77
-:
-:       PTRATIO    B  LSTAT
-: coef    -2.04 1.13  -3.61
+#+begin_example
+      intercept  CRIM   ZN  INDUS  CHAS   NOX   RM   AGE   DIS  RAD   TAX  \
+coef      22.80 -1.00 0.70   0.28  0.72 -2.02 3.15 -0.18 -3.08 2.25 -1.77
+
+      PTRATIO    B  LSTAT
+coef    -2.04 1.13  -3.61
+#+end_example
 
 #+begin_src jupyter-python :exports both
 # 先頭のインスタンスを取り出す
@@ -392,11 +398,13 @@ print(df_coef.T)
 #+end_src
 
 #+RESULTS:
-:       intercept  CRIM   ZN  INDUS  CHAS    NOX   RM   AGE   DIS  RAD   TAX  \
-: coef      30.25 -0.11 0.03   0.04  2.78 -17.20 4.44 -0.01 -1.45 0.26 -0.01
-:
-:       PTRATIO    B  LSTAT
-: coef    -0.92 0.01  -0.51
+#+begin_example
+      intercept  CRIM   ZN  INDUS  CHAS    NOX   RM   AGE   DIS  RAD   TAX  \
+coef      30.25 -0.11 0.03   0.04  2.78 -17.20 4.44 -0.01 -1.45 0.26 -0.01
+
+      PTRATIO    B  LSTAT
+coef    -0.92 0.01  -0.51
+#+end_example
 
 #+begin_src jupyter-python :exports both
 # インスタンス173の特徴量を出力
@@ -404,11 +412,13 @@ print(Xi)
 #+end_src
 
 #+RESULTS:
-:      CRIM   ZN  INDUS  CHAS  NOX   RM   AGE  DIS  RAD  TAX  PTRATIO      B  \
-: 173  0.09 0.00   4.05     0 0.51 6.42 84.10 2.65    5  296    16.60 395.50
-:
-:      LSTAT
-: 173   9.04
+#+begin_example
+     CRIM   ZN  INDUS  CHAS  NOX   RM   AGE  DIS  RAD  TAX  PTRATIO      B  \
+173  0.09 0.00   4.05     0 0.51 6.42 84.10 2.65    5  296    16.60 395.50
+
+     LSTAT
+173   9.04
+#+end_example
 
 #+begin_src jupyter-python :exports both
 # 各特徴量の値x回帰係数
@@ -416,11 +426,13 @@ print(Xi * df_coef.drop("intercept").values.T)
 #+end_src
 
 #+RESULTS:
-:      CRIM   ZN  INDUS  CHAS   NOX    RM   AGE   DIS  RAD   TAX  PTRATIO    B  \
-: 173 -0.01 0.00   0.16  0.00 -8.77 28.48 -0.53 -3.83 1.31 -3.15   -15.20 4.88
-:
-:      LSTAT
-: 173  -4.60
+#+begin_example
+     CRIM   ZN  INDUS  CHAS   NOX    RM   AGE   DIS  RAD   TAX  PTRATIO    B  \
+173 -0.01 0.00   0.16  0.00 -8.77 28.48 -0.53 -3.83 1.31 -3.15   -15.20 4.88
+
+     LSTAT
+173  -4.60
+#+end_example
 
 ** 2.3.6 Random Forestによる予測
 #+begin_src jupyter-python :exports both
