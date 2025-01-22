@@ -1,0 +1,539 @@
+* 5 インスタンスごとの異質性をとらえる〜Individual Conditional Expectation〜
+:PROPERTIES:
+:CUSTOM_ID: インスタンスごとの異質性をとらえるindividual-conditional-expectation
+:header-args:jupyter-python: :exports both :session ml :kernel ml_interpret :async yes :tangle yes
+:END:
+** 5.2 交互作用とPDの限界
+*** 5.2.1 シミュレーションデータの生成
+#+begin_src jupyter-python :exports both
+import sys
+import warnings
+from dataclasses import dataclass
+from typing import Any  # 型ヒント用
+from __future__ import annotations  # 型ヒント用
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import japanize_matplotlib  # matplotlibの日本語表示対応
+
+# 自作モジュール
+sys.path.append("..")
+from mli.visualize import get_visualization_setting
+
+np.random.seed(42)
+pd.options.display.float_format = "{:.2f}".format
+sns.set(**get_visualization_setting())
+warnings.simplefilter("ignore")  # warningsを非表示に
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+from sklearn.model_selection import train_test_split
+
+
+def generate_simulation_data():
+    """シミュレーションデータを生成し、訓練データとテストデータに分割"""
+
+    # シミュレーションの設定
+    N = 1000
+
+    # X0とX1は一様分布から生成
+    x0 = np.random.uniform(-1, 1, N)
+    x1 = np.random.uniform(-1, 1, N)
+    # 二項分布の試行回数を1にすると成功確率0.5のベルヌーイ分布と一致
+    x2 = np.random.binomial(1, 0.5, N)
+    # ノイズは正規分布からデータを生成
+    epsilon = np.random.normal(0, 0.1, N)
+
+    # 特徴量をまとめる
+    X = np.column_stack((x0, x1, x2))
+
+    # 線形和で目的変数を作成
+    y = x0 - 5 * x1 + 10 * x1 * x2 + epsilon
+
+    return train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+# シミュレーションデータを生成
+X_train, X_test, y_train, y_test = generate_simulation_data()
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both :file ./images/5-2-1.png :results output file
+def plot_scatter(x, y, title=None, xlabel=None, ylabel=None):
+    """散布図を作成する"""
+    fig, ax = plt.subplots()
+    ax.scatter(x, y, alpha=0.3)
+    ax.set(xlabel=xlabel, ylabel=ylabel)
+    fig.suptitle(title)
+
+    fig.show()
+
+
+# 散布図を可視化
+plot_scatter(
+    X_train[:, 1], y_train, title="X1とYの散布図", xlabel="X1", ylabel="Y"
+)
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-2-1.png]]
+
+#+begin_src jupyter-python :exports both
+from sklearn.ensemble import RandomForestRegressor
+from mli.metrics import regression_metrics  # 2.3節で作成した自作関数
+
+
+# Random Forestで予測モデルを構築
+rf = RandomForestRegressor(n_jobs=-1, random_state=42).fit(X_train, y_train)
+
+# 予測精度を確認
+print(regression_metrics(rf, X_test, y_test))
+#+end_src
+
+#+RESULTS:
+:    RMSE   R2
+: 0  0.31 0.99
+
+*** 5.2.2 PDの可視化
+#+begin_src jupyter-python :exports both :file ./images/5-2-2.png :results output file
+from mli.interpret import PartialDependence  # 4.3節で作成した自作クラス
+
+
+# X1についてPDを計算し、可視化
+pdp = PartialDependence(rf, X_test, ["X0", "X1", "X2"])
+pdp.partial_dependence("X1")
+pdp.plot(ylim=(-6, 6))
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-2-2.png]]
+
+** 5.3 Individual Conditional Expectation
+*** 5.3.1 ICEの実装
+#+begin_src jupyter-python :exports both
+class IndividualConditionalExpectation(PartialDependence):
+    """Individual Conditional Expectation"""
+
+    def individual_conditional_expectation(
+        self,
+        var_name: str,
+        ids_to_compute: list[int],
+        n_grid: int = 50
+    ) -> None:
+        """ICEを求める
+
+        Args:
+            var_name:
+                ICEを計算したい変数名
+            ids_to_compute:
+                ICEを計算したいインスタンスのリスト
+            n_grid:
+                グリッドを何分割するか
+                細かすぎると値が荒れるが、粗すぎるとうまく関係をとらえられない
+                デフォルトは50
+        """
+
+        # 可視化の際に用いるのでターゲットの変数名を保存
+        self.target_var_name = var_name
+        # 変数名に対応するインデックスをもってくる
+        var_index = self.var_names.index(var_name)
+
+        # ターゲットの変数を、取りうる値の最大値から最小値まで動かせるようにする
+        value_range = np.linspace(
+            self.X[:, var_index].min(),
+            self.X[:, var_index].max(),
+            num=n_grid
+        )
+
+        # インスタンスごとのモデルの予測値
+        # PDの_counterfactual_prediction()をそのまま使っているので
+        # 全データに対して予測してからids_to_computeに絞り込んでいるが
+        # 本当は絞り込んでから予測をしたほうが速い
+        individual_prediction = np.array([
+            self._counterfactual_prediction(var_index, x)[ids_to_compute]
+            for x in value_range
+        ])
+
+        # ICEをデータフレームとしてまとめる
+        self.df_ice = (
+            # ICEの値
+            pd.DataFrame(data=individual_prediction, columns=ids_to_compute)
+            # ICEで用いた特徴量の値。特徴量名を列名としている
+            .assign(**{var_name: value_range})
+            # 縦持ちに変換して完成
+            .melt(id_vars=var_name, var_name="instance", value_name="ice")
+        )
+
+        # ICEを計算したインスタンスについての情報も保存しておく
+        # 可視化の際に実際の特徴量の値とその予測値をプロットするために用いる
+        self.df_instance = (
+            # インスタンスの特徴量の値
+            pd.DataFrame(
+                data=self.X[ids_to_compute],
+                columns=self.var_names
+            )
+            # インスタンスに対する予測値
+            .assign(
+                instance=ids_to_compute,
+                prediction=self.estimator.predict(self.X[ids_to_compute]),
+            )
+            # 並べ替え
+            .loc[:, ["instance", "prediction"] + self.var_names]
+        )
+
+    def plot(self, ylim: list[float] | None = None) -> None:
+        """ICEを可視化
+
+        Args:
+            ylim: Y軸の範囲。特に指定しなければiceの範囲となる。
+        """
+
+        fig, ax = plt.subplots()
+        # ICEの線
+        sns.lineplot(
+            data=self.df_ice,
+            x=self.target_var_name,
+            y="ice",
+            units="instance",
+            lw=0.8,
+            alpha=0.5,
+            estimator=None,
+            zorder=1,  # zorderを指定することで、線が背面、点が前面にくるようにする
+            ax=ax,
+        )
+        # インスタンスからの実際の予測値を点でプロットしておく
+        sns.scatterplot(
+            data=self.df_instance,
+            x=self.target_var_name,
+            y="prediction",
+            zorder=2,
+            ax=ax
+        )
+        ax.set(xlabel=self.target_var_name, ylabel="Prediction", ylim=ylim)
+        fig.suptitle(
+            f"Individual Conditional Expectation({self.target_var_name})"
+        )
+
+        fig.show()
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+# ICEのインスタンスを作成
+ice = IndividualConditionalExpectation(rf, X_test, ["X0", "X1", "X2"])
+
+# インスタンス0について、X1のICEを計算
+ice.individual_conditional_expectation("X1", [0])
+
+# インスタンス0の特徴量と予測値を出力
+print(ice.df_instance)
+#+end_src
+
+#+RESULTS:
+:    instance  prediction    X0   X1   X2
+: 0         0       -3.74 -0.24 0.87 0.00
+
+*** 5.3.2 ICEのシミュレーションデータへの適用
+#+begin_src jupyter-python :exports both :file ./images/5-3-2a.png :results output file
+# インスタンス0のICEを可視化
+ice.plot(ylim=(-6, 6))
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-3-2a.png]]
+
+#+begin_src jupyter-python :exports both
+# インスタンス1について、X1のICEを計算
+ice.individual_conditional_expectation("X1", [1])
+
+# インスタンス1の特徴量と予測値を出力
+print(ice.df_instance)
+#+end_src
+
+#+RESULTS:
+:    instance  prediction   X0    X1   X2
+: 0         1       -2.45 0.63 -0.61 1.00
+
+#+begin_src jupyter-python :exports both :file ./images/5-3-2b.png :results output file
+# インスタンス1のICEを可視化
+ice.plot(ylim=(-6, 6))
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-3-2b.png]]
+
+#+begin_src jupyter-python :exports both :file ./images/5-3-2c.png :results output file
+# インスタンス0からインスタンス20までのICEを計算し、可視化
+ice.individual_conditional_expectation("X1", range(20))
+ice.plot(ylim=(-6, 6))
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-3-2c.png]]
+
+** 5.4 Conditional Partial Dependence
+*** 5.4.2 CPDの可視化
+#+begin_src jupyter-python :exports both :file ./images/5-4-2a.png :results output file
+# X2=0のインスタンスに関して、X1のPDを計算
+pdp = PartialDependence(rf, X_test[X_test[:, 2] == 0], ["X0", "X1", "X2"])
+pdp.partial_dependence("X1")
+
+# PDを可視化
+pdp.plot(ylim=(-6, 6))
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-4-2a.png]]
+
+#+begin_src jupyter-python :exports both :file ./images/5-4-2b.png :results output file
+# X2=1のインスタンスに関して、X1のPDを計算
+pdp = PartialDependence(rf, X_test[X_test[:, 2] == 1], ["X0", "X1", "X2"])
+pdp.partial_dependence("X1")
+
+# PDを可視化
+pdp.plot(ylim=(-6, 6))
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-4-2b.png]]
+
+** 5.5 ICEの解釈
+*** 5.5.1 what-if
+#+begin_src jupyter-python :exports both :file ./images/5-5-1.png :results output file
+# インスタンス0とインスタンス1に関して、X1のICEを可視化
+ice.individual_conditional_expectation("X1", [0, 1])
+ice.plot(ylim=(-6, 6))
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-5-1.png]]
+
+#+begin_src jupyter-python :exports both
+# インスタンス0とインスタンス1の特徴量の値を確認
+print(ice.df_instance)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+   instance  prediction    X0    X1   X2
+0         0       -3.74 -0.24  0.87 0.00
+1         1       -2.45  0.63 -0.61 1.00
+#+end_example
+
+*** 5.5.2 特徴量に依存関係があるケース
+#+begin_src jupyter-python :exports both
+def generate_simulation_data():
+    """シミュレーションデータを生成し、訓練データとテストデータに分割"""
+
+    # シミュレーションの設定
+    N=1000
+
+    # X0は一様分布から生成
+    x0 = np.random.uniform(-1, 1, N)
+    # 二項分布の試行回数を1にすると成功確率0.5のベルヌーイ分布と一致
+    x2 = np.random.binomial(1, 0.5, N)
+    # X1はX2に依存する形にする
+    x1 = np.where(
+        x2 == 1,
+        np.random.uniform(-0.5, 1, N),
+        np.random.uniform(-1, 0.5, N)
+    )
+    # ノイズは正規分布からデータを生成
+    epsilon = np.random.normal(0, 0.1, N)
+
+    # 特徴量をまとめる
+    X = np.column_stack((x0, x1, x2))
+
+    # 線形和で目的変数を作成
+    y = x0 - 5 * x1 + 10 * x1 * x2 + epsilon
+
+    return train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+X_train, X_test, y_train, y_test = generate_simulation_data()
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both :file ./images/5-5-2a.png :results output file
+def plot_scatter(x, y, group, title=None, xlabel=None, ylabel=None):
+    """散布図を作成する"""
+
+    fig, ax = plt.subplots()
+    sns.scatterplot(x=x, y=y, style=group, hue=group, alpha=0.5, ax=ax)
+    ax.set(xlabel=xlabel, ylabel=ylabel)
+    fig.suptitle(title)
+
+    fig.show()
+
+
+# X1とYの散布図を作成
+plot_scatter(
+    X_train[:, 1],
+    y_train,
+    X_train[:, 2].astype(int),
+    title="X1とYの散布図",
+    xlabel="X1",
+    ylabel="Y",
+)
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-5-2a.png]]
+
+#+begin_src jupyter-python :exports both
+# Random Forestで予測モデルを構築
+rf = RandomForestRegressor(n_jobs=-1, random_state=42).fit(X_train, y_train)
+
+# 予測精度を確認
+print(regression_metrics(rf, X_test, y_test))
+#+end_src
+
+#+RESULTS:
+:    RMSE   R2
+: 0  0.47 0.96
+
+#+begin_src jupyter-python :exports both
+# インスタンス0に関して、特徴量X1のICEを計算
+ice = IndividualConditionalExpectation(rf, X_test, ["X0", "X1", "X2"])
+ice.individual_conditional_expectation("X1", [0])
+
+# インスタンスの特徴量を確認
+print(ice.df_instance)
+#+end_src
+
+#+RESULTS:
+:    instance  prediction    X0    X1   X2
+: 0         0        1.19 -0.81 -0.43 0.00
+
+#+begin_src jupyter-python :exports both :file ./images/5-5-2b.png :results output file
+# ICEを可視化
+ice.plot(ylim=(-6, 6))
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-5-2b.png]]
+
+** 5.6 実データでの分析
+#+begin_src jupyter-python :exports both
+import joblib
+
+
+# データと学習済みモデルを読み込む
+X_train, X_test, y_train, y_test = joblib.load("../data/boston_housing.pkl")
+rf = joblib.load("../model/boston_housing_rf.pkl")
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+from sklearn.inspection import partial_dependence
+
+
+# PDとICEを計算
+ice = partial_dependence(
+    estimator=rf,  # 学習済みモデル
+    X=X_test,  # ICEを計算したいデータ
+    features=["RM"],  # ICEを計算したい特徴量
+    kind="both",  # PDとICEの両方を計算
+)
+print(ice)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+{'grid_values': [array([3.561, 4.519, 4.628, 4.88 , 5.036, 5.304, 5.344, 5.362, 5.39 ,
+       5.414, 5.427, 5.453, 5.456, 5.572, 5.594, 5.605, 5.617, 5.701,
+       5.708, 5.709, 5.713, 5.786, 5.794, 5.854, 5.869, 5.874, 5.876,
+       5.879, 5.885, 5.898, 5.914, 5.936, 5.951, 5.96 , 5.976, 5.983,
+       6.003, 6.004, 6.006, 6.009, 6.015, 6.02 , 6.023, 6.027, 6.064,
+       6.065, 6.14 , 6.142, 6.167, 6.174, 6.185, 6.211, 6.216, 6.219,
+       6.229, 6.232, 6.24 , 6.245, 6.279, 6.286, 6.297, 6.302, 6.312,
+       6.326, 6.372, 6.389, 6.415, 6.416, 6.417, 6.426, 6.454, 6.461,
+       6.471, 6.482, 6.545, 6.552, 6.575, 6.579, 6.593, 6.595, 6.657,
+       6.701, 6.726, 6.728, 6.75 , 6.758, 6.762, 6.781, 6.849, 6.861,
+       6.968, 6.98 , 7.185, 7.249, 7.313, 7.47 , 7.853, 7.875, 8.034])], 'values': [array([3.561, 4.519, 4.628, 4.88 , 5.036, 5.304, 5.344, 5.362, 5.39 ,
+       5.414, 5.427, 5.453, 5.456, 5.572, 5.594, 5.605, 5.617, 5.701,
+       5.708, 5.709, 5.713, 5.786, 5.794, 5.854, 5.869, 5.874, 5.876,
+       5.879, 5.885, 5.898, 5.914, 5.936, 5.951, 5.96 , 5.976, 5.983,
+       6.003, 6.004, 6.006, 6.009, 6.015, 6.02 , 6.023, 6.027, 6.064,
+       6.065, 6.14 , 6.142, 6.167, 6.174, 6.185, 6.211, 6.216, 6.219,
+       6.229, 6.232, 6.24 , 6.245, 6.279, 6.286, 6.297, 6.302, 6.312,
+       6.326, 6.372, 6.389, 6.415, 6.416, 6.417, 6.426, 6.454, 6.461,
+       6.471, 6.482, 6.545, 6.552, 6.575, 6.579, 6.593, 6.595, 6.657,
+       6.701, 6.726, 6.728, 6.75 , 6.758, 6.762, 6.781, 6.849, 6.861,
+       6.968, 6.98 , 7.185, 7.249, 7.313, 7.47 , 7.853, 7.875, 8.034])], 'average': array([[18.85780392, 18.78220588, 18.77509804, 18.74723529, 18.53620588,
+        18.68498039, 18.68963725, 18.70292157, 18.70666667, 18.70652941,
+        18.7077451 , 18.70991176, 18.7099902 , 18.71266667, 18.69570588,
+        18.78512745, 18.78676471, 18.73911765, 18.8157451 , 18.8157451 ,
+        18.81963725, 19.13511765, 19.1480098 , 19.29561765, 19.28178431,
+        19.29342157, 19.30133333, 19.29657843, 19.29454902, 19.29820588,
+        19.305     , 19.31521569, 19.34894118, 19.34862745, 19.35315686,
+        19.3725    , 19.3785098 , 19.37987255, 19.37911765, 19.37547059,
+        19.35468627, 19.35060784, 19.34788235, 19.33320588, 19.48998039,
+        19.49003922, 20.05187255, 20.08277451, 20.16319608, 20.18614706,
+        20.1855098 , 20.18246078, 20.18193137, 20.18560784, 20.18733333,
+        20.18686275, 20.19282353, 20.18408824, 20.21892157, 20.2259902 ,
+        20.27601961, 20.27448039, 20.28603922, 20.32848039, 20.33937255,
+        20.35803922, 20.3242451 , 20.32457843, 20.32935294, 20.33459804,
+        20.34196078, 20.33540196, 20.33408824, 20.37047059, 21.55721569,
+        21.70091176, 21.71248039, 21.70840196, 21.7407549 , 21.74090196,
+        21.9717549 , 22.25193137, 22.43795098, 22.48047059, 22.49316667,
+        22.50960784, 22.51206863, 22.59169608, 24.07634314, 24.28207843,
+        25.07779412, 26.8702451 , 28.63790196, 28.49196078, 28.44926471,
+        34.42509804, 35.88858824, 35.92672549, 36.06163725]]), 'individual': array([[[20.489, 20.312, 20.312, ..., 41.004, 41.004, 41.234],
+        [23.949, 23.871, 23.871, ..., 43.439, 43.663, 43.601],
+        [15.278, 15.278, 15.278, ..., 31.898, 31.898, 31.876],
+        ...,
+        [13.037, 13.037, 13.037, ..., 29.435, 29.435, 29.435],
+        [19.499, 19.353, 19.353, ..., 36.596, 36.596, 36.585],
+        [20.049, 19.831, 19.831, ..., 39.162, 39.202, 39.393]]])}
+#+end_example
+
+#+begin_src jupyter-python :exports both :file ./images/5-6.png :results output file
+# from sklearn.inspection import plot_partial_dependence # deprecated
+def plot_ice():
+    """ICEを可視化"""
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    # plot_partial_dependence(
+    #     estimator=rf,  # 学習済みモデル
+    #     X=X_test,  # ICEを計算したいデータ
+    #     features=["RM"],  # ICEを計算したい特徴量
+    #     kind="both",  # PDとICEの両方を計算
+    #     ax=ax,
+    # )
+
+    for i in range(ice["individual"].shape[1]):
+        ax.plot(
+            ice["grid_values"][0],
+            ice["individual"][0, i, :],
+            color="gray",
+            alpha=0.5,
+            lw=0.8,
+        )
+    ax.plot(
+        ice["grid_values"][0],
+        ice["average"][0],
+        color="red",
+        lw=2,
+        label="平均",
+    )
+
+    ax.set(xlabel="RM", ylabel="Partial Dependence")
+    ax.legend()
+    fig.show()
+
+
+# ICEを可視化
+plot_ice()
+#+end_src
+
+#+RESULTS:
+[[file:./images/5-6.png]]
