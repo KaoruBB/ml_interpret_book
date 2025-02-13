@@ -1,0 +1,266 @@
+#+PROPERTY: header-args:R :session *R* :results output :exports both :tangle yes :noweb yes
+* A.2 データの読み込み
+#+begin_src R :results none
+install.packages(c("tidymodels", "DALEX", "ranger", "mlbench"), repos='https://ftp.yz.yamagata-u.ac.jp/pub/cran/')
+#+end_src
+
+#+begin_src R :results none
+# 読み込み
+library(tidymodels)
+library(DALEX)
+#+end_src
+
+#+begin_src R
+# 乱数を固定
+set.seed(42)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src R :exports both
+# データを読み込み
+data(BostonHousing, package = "mlbench")
+#+end_src
+
+#+RESULTS:
+
+#+begin_src R :exports both
+BostonHousing %>% head()
+#+end_src
+
+#+RESULTS:
+#+begin_example
+     crim zn indus chas   nox    rm  age    dis rad tax ptratio      b lstat medv
+1 0.00632 18  2.31    0 0.538 6.575 65.2 4.0900   1 296    15.3 396.90  4.98 24.0
+2 0.02731  0  7.07    0 0.469 6.421 78.9 4.9671   2 242    17.8 396.90  9.14 21.6
+3 0.02729  0  7.07    0 0.469 7.185 61.1 4.9671   2 242    17.8 392.83  4.03 34.7
+4 0.03237  0  2.18    0 0.458 6.998 45.8 6.0622   3 222    18.7 394.63  2.94 33.4
+5 0.06905  0  2.18    0 0.458 7.147 54.2 6.0622   3 222    18.7 396.90  5.33 36.2
+6 0.02985  0  2.18    0 0.458 6.430 58.7 6.0622   3 222    18.7 394.12  5.21 28.7
+#+end_example
+
+* A.3 tidymodelsによる機械学習モデルの構築
+#+begin_src R
+# データ分割方法を指定 # 訓練データとテストデータを8:2にする
+split <- initial_split(BostonHousing, prop = 0.8)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src R
+# 訓練データとテストデータに分割
+df_train <- training(split)
+df_test <- testing(split)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src R :exports both
+# モデルの作成
+# scikit-learnのデフォルトではmtryは特徴量の数と同じなので13にする
+model <- rand_forest(trees = 100, min_n = 1, mtry = 13) %>% 
+  set_engine(engine = "ranger", seed = 42) %>% 
+  set_mode(mode = "regression")
+
+# モデルの中身を確認
+model
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Random Forest Model Specification (regression)
+
+Main Arguments:
+  mtry = 13
+  trees = 100
+  min_n = 1
+
+Engine-Specific Arguments:
+  seed = 42
+
+Computational engine: ranger
+#+end_example
+
+#+begin_src R :exports both
+# モデルの学習
+model_trained <- model %>% fit(medv ~ ., data = df_train)
+model_trained
+#+end_src
+
+#+RESULTS:
+#+begin_example
+parsnip model object
+
+Ranger result
+
+Call:
+ ranger::ranger(x = maybe_data_frame(x), y = y, mtry = min_cols(~13,      x), num.trees = ~100, min.node.size = min_rows(~1, x), seed = ~42,      num.threads = 1, verbose = FALSE)
+
+Type:                             Regression
+Number of trees:                  100
+Sample size:                      404
+Number of independent variables:  13
+Mtry:                             13
+Target node size:                 1
+Variable importance mode:         none
+Splitrule:                        variance
+OOB prediction error (MSE):       12.95997
+R squared (OOB):                  0.8375315
+#+end_example
+
+#+begin_src R :exports both
+# テストデータに対する予測
+df_result <- df_test %>% 
+  select(medv) %>% 
+  bind_cols(predict(model_trained, df_test))
+
+# 結果を確認
+df_result %>% 
+  head()
+#+end_src
+
+#+RESULTS:
+#+begin_example
+medv  .pred
+7  22.9 19.888
+8  27.1 17.134
+13 21.7 19.576
+15 18.2 19.664
+18 17.5 18.373
+19 20.2 18.275
+#+end_example
+
+#+begin_src R :exports both :results value
+# 評価関数を作成
+evaluate_result <- metric_set(rmse, rsq)
+# 予測精度を評価
+df_result %>%
+  evaluate_result(medv, .pred)
+#+end_src
+
+#+RESULTS:
+| rmse | standard |  2.75721582362339 |
+| rsq  | standard | 0.934430433478657 |
+
+* A.4 DALEXによる機械学習モデルの解釈
+#+begin_src R :exports both
+# explainerの作成
+explainer <- model_trained %>% 
+  explain(
+    data = df_test %>% select(-medv), # medv以外
+    y = df_test %>% pull(medv), # medvだけ
+    label = "Random Forest"
+  )
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Preparation of a new explainer is initiated
+  -> model label       :  Random Forest
+  -> data              :  102  rows  13  cols
+  -> target variable   :  102  values
+  -> predict function  :  yhat.model_fit  will be used ( [33m default [39m )
+  -> predicted values  :  No value for predict function target column. ( [33m default [39m )
+  -> model_info        :  package parsnip , ver. 1.2.1 , task regression ( [33m default [39m )
+  -> predicted values  :  numerical, min =  8.554 , mean =  22.85839 , max =  48.064
+  -> residual function :  difference between y and yhat ( [33m default [39m )
+  -> residuals         :  numerical, min =  -7.309 , mean =  0.5416078 , max =  9.966
+ [32m A new explainer has been created! [39m
+#+end_example
+
+#+begin_src R
+# PFIを計算
+pfi <- explainer %>%
+  model_parts(
+    loss_function = loss_root_mean_square,
+    B = 10,
+    type = "difference"
+  )
+#+end_src
+
+#+RESULTS:
+
+#+begin_src R :results graphics file :file images/a-4-1.png :exports both :width 500 :height 320
+# 可視化
+plot(pfi)
+#+end_src
+
+#+RESULTS:
+[[file:images/a-4-1.png]]
+
+#+begin_src R :results graphics file :file images/a-4-2.png :exports both :width 500 :height 320
+# PDを計算
+pd <- explainer %>% model_profile(variables = "rm")
+# 可視化
+plot(pd)
+#+end_src
+
+#+RESULTS:
+[[file:images/a-4-2.png]]
+
+#+begin_src R :exports both :results graphics file :file images/a-4-3.png :width 500 :height 320
+# ICEを計算
+ice <- explainer %>% 
+  predict_profile(
+    new_observation = df_test, 
+    variables = "rm"
+  )
+
+# 可視化
+plot(ice, variables = "rm")
+#+end_src
+
+#+RESULTS:
+[[file:images/a-4-3.png]]
+
+#+begin_src R :results graphics file :file images/a-4-4.png :exports both :width 500 :height 320
+# SAHPを計算
+shap <- explainer %>%
+  predict_parts(
+    new_observation = df_test %>% slice(1), # インスタンス1を抜き出す
+    type = "shap",
+    B = 25
+  )
+# 可視化
+plot(shap)
+#+end_src
+
+#+RESULTS:
+[[file:images/a-4-4.png]]
+
+* A.5 まとめ
+#+begin_src R :exports both
+sessionInfo()
+#+end_src
+
+#+RESULTS:
+#+begin_example
+R version 4.3.3 (2024-02-29)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS Sonoma 14.5
+
+Matrix products: default
+BLAS:   /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/lib/libRblas.0.dylib
+LAPACK: /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.11.0
+
+locale:
+[1] en_US.UTF-8/UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+time zone: Asia/Tokyo
+tzcode source: internal
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base
+
+other attached packages:
+ [1] DALEX_2.4.3        yardstick_1.3.2    workflowsets_1.1.0 workflows_1.1.4    tune_1.2.1         tidyr_1.3.1        tibble_3.2.1       rsample_1.2.1      recipes_1.1.0      purrr_1.0.2
+[11] parsnip_1.2.1      modeldata_1.4.0    infer_1.0.7        ggplot2_3.5.1      dplyr_1.1.4        dials_1.3.0        scales_1.3.0       broom_1.0.6        tidymodels_1.2.0
+
+loaded via a namespace (and not attached):
+ [1] gtable_0.3.5        lattice_0.22-5      vctrs_0.6.5         tools_4.3.3         generics_0.1.3      parallel_4.3.3      fansi_1.0.6         pkgconfig_2.0.3     Matrix_1.6-5        data.table_1.16.0
+[11] lhs_1.2.0           GPfit_1.0-8         lifecycle_1.0.4     farver_2.1.2        compiler_4.3.3      munsell_0.5.1       codetools_0.2-19    DiceDesign_1.10     class_7.3-22        prodlim_2024.06.25
+[21] pillar_1.9.0        furrr_0.3.1         MASS_7.3-60.0.1     gower_1.0.2         iterators_1.0.14    rpart_4.1.23        foreach_1.5.2       parallelly_1.41.0   lava_1.8.1          tidyselect_1.2.1
+[31] digest_0.6.37       future_1.34.0       listenv_0.9.1       labeling_0.4.3      splines_4.3.3       grid_4.3.3          colorspace_2.1-1    cli_3.6.3           magrittr_2.0.3      survival_3.5-8
+[41] utf8_1.2.4          future.apply_1.11.3 withr_3.0.0         backports_1.5.0     lubridate_1.9.3     timechange_0.3.0    ingredients_2.3.0   globals_0.16.3      nnet_7.3-19         timeDate_4041.110
+[51] ranger_0.17.0       hardhat_1.4.0       rlang_1.1.4         Rcpp_1.0.12         glue_1.7.0          ipred_0.9-15        rstudioapi_0.16.0   R6_2.5.1
+#+end_example
