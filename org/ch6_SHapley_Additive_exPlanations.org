@@ -1,0 +1,512 @@
+* 6 予測の理由を考える〜SHapley Additive exPlanations〜
+:PROPERTIES:
+:CUSTOM_ID: 予測の理由を考えるshapley-additive-explanations
+:header-args:jupyter-python: :exports both :session ml :kernel ml_interpret :async yes :tangle yes
+:END:
+** 6.5 SHAPの実装
+#+begin_src jupyter-python :exports both
+import sys
+import warnings
+from dataclasses import dataclass
+from typing import Any  # 型ヒント用
+from __future__ import annotations  # 型ヒント用
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import japanize_matplotlib  # matplotlibの日本語表示対応
+
+# 自作モジュール
+sys.path.append("..")
+from mli.visualize import get_visualization_setting
+
+np.random.seed(42)
+pd.options.display.float_format = "{:.2f}".format
+sns.set(**get_visualization_setting())
+warnings.simplefilter("ignore")  # warningsを非表示に
+#+end_src
+
+#+RESULTS:
+
+*** 6.5.1 SHAPの実装
+#+begin_src jupyter-python :exports both
+from sklearn.model_selection import train_test_split
+
+
+def generate_simulation_data():
+    """シミュレーションデータを生成し、訓練データとテストデータに分割する"""
+
+    # シミュレーションの設定
+    N = 1000
+    J = 2
+    beta = np.array([0, 1])
+
+    # 特徴量とノイズは正規分布から生成
+    X = np.random.normal(0, 1, [N, J])
+    e = np.random.normal(0, 0.1, N)
+
+    # 線形和で目的変数を作成
+    y = X @ beta + e
+
+    return train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+# シミュレーションデータを生成
+X_train, X_test, y_train, y_test = generate_simulation_data()
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+from sklearn.ensemble import RandomForestRegressor
+from mli.metrics import regression_metrics  # 2.3節で作成した精度評価関数
+
+
+# Random Forestで予測モデルを構築
+rf = RandomForestRegressor(n_estimators=500, n_jobs=-1, random_state=42)
+rf.fit(X_train, y_train)
+
+# 予測精度の評価
+print(regression_metrics(rf, X_test, y_test))
+#+end_src
+
+#+RESULTS:
+:    RMSE   R2
+: 0  0.11 0.99
+
+#+begin_src jupyter-python :exports both
+# 目的変数と予測値のデータフレームをつくる
+df = pd.DataFrame(data=X_test, columns=["X0", "X1"])
+
+# インスタンスごとの予測値
+df["y_pred"] = rf.predict(X_test)
+
+# ベースラインとしての予測の平均
+df["y_pred_baseline"] = rf.predict(X_test).mean()
+
+# データフレームを出力
+print(df.head())
+#+end_src
+
+#+RESULTS:
+#+begin_example
+     X0    X1  y_pred  y_pred_baseline
+0  1.08 -0.04    0.08             0.05
+1 -0.78  0.65    0.68             0.05
+2  0.72 -0.37   -0.44             0.05
+3  0.06  0.53    0.45             0.05
+4  2.30 -0.36   -0.36             0.05
+#+end_example
+
+#+begin_src jupyter-python :exports both
+# インスタンス1を抽出
+x = X_test[1]
+
+# CASE1: X0もX1も分かっていないときの予測値（予測の平均）
+E_baseline = rf.predict(X_test).mean()
+
+# CASE2: X0のみが分かっているときの予測値
+# 全データのX0の値をインスタンス1のX0の値に置き換えて予測を行い、平均する
+X0 = X_test.copy()
+X0[:, 0] = x[0]
+E0 = rf.predict(X0).mean()
+
+# CASE3: X1のみが分かっているときの予測値
+# 全データのX1の値をインスタンス1のX1の値に置き換えて予測を行い、平均する
+X1 = X_test.copy()
+X1[:, 1] = x[1]
+E1 = rf.predict(X1).mean()
+
+# CASE4: X0もX1も分かっているときの予測値
+E_full = rf.predict(x[np.newaxis, :])[0]
+
+# 結果を出力
+print(f"CASE1: X0もX1も分かっていないときの予測値 -> {E_baseline: .2f}")
+print(f"CASE2: X0のみが分かっているときの予測値 -> {E0: .2f}")
+print(f"CASE3: X1のみが分かっているときの予測値 -> {E1: .2f}")
+print(f"CASE4: X0もX1も分かっているときの予測値 -> {E_full: .2f}")
+#+end_src
+
+#+RESULTS:
+#+begin_example
+CASE1: X0もX1も分かっていないときの予測値 ->  0.05
+CASE2: X0のみが分かっているときの予測値 ->  0.05
+CASE3: X1のみが分かっているときの予測値 ->  0.65
+CASE4: X0もX1も分かっているときの予測値 ->  0.68
+#+end_example
+
+#+begin_src jupyter-python :exports both
+SHAP0 = ((E0 - E_baseline) + (E_full - E1)) / 2
+SHAP1 = ((E1 - E_baseline) + (E_full - E0)) / 2
+
+print(f"(SHAP0, SHAP1) = {SHAP0:.2f}, {SHAP1:.2f}")
+#+end_src
+
+#+RESULTS:
+: (SHAP0, SHAP1) = 0.02, 0.62
+
+*** 6.5.2 ShapleyAdditiveExplanationsクラスの実装
+#+begin_src jupyter-python :exports both
+from scipy.special import factorial
+from itertools import combinations
+
+
+@dataclass
+class ShapleyAdditiveExplanations:
+    """SHapley Additive exPlanations
+
+    Args:
+        estimator: 学習済みモデル
+        X: SHAPの計算に使う特徴量
+        var_names: 特徴量の名前
+    """
+
+    estimator: Any
+    X: np.ndarray
+    var_names: list[str]
+
+    def __post_init__(self) -> None:
+        # ベースラインとしての平均的な予測値
+        self.baseline = self.estimator.predict(self.X).mean()
+
+        # 特徴量の総数
+        self.J = self.X.shape[1]
+
+        # あり得るすべての特徴量の組み合わせ
+        self.subsets = [
+            s
+            for j in range(self.J + 1)
+            for s in combinations(range(self.J), j)
+        ]
+
+    def _get_expected_value(self, subset: tuple[int, ...]) -> np.ndarray:
+        """特徴量の組み合わせを指定するとその特徴量が場合の予測値を計算
+
+        Args:
+            subset: 特徴量の組み合わせ
+        """
+
+        _X = self.X.copy()  # 元のデータが上書きされないように
+
+        # 特徴量がある場合は上書き。なければそのまま。
+        if subset is not None:
+            # 元がtupleなのでリストにしないとインデックスとして使えない
+            _s = list(subset)
+            _X[:, _s] = _X[self.i, _s]
+
+        return self.estimator.predict(_X).mean()
+
+    def _calc_weighted_marginal_contribution(
+        self,
+        j: int,
+        s_union_j: tuple[int, ...]
+    ) -> float:
+        """限界貢献度x組み合わせ出現回数を求める
+
+        Args:
+            j: 限界貢献度を計算したい特徴量のインデックス
+            s_union_j: jを含む特徴量の組み合わせ
+        """
+
+        # 特徴量jがない場合の組み合わせ
+        s = tuple(sorted(set(s_union_j) - set([j])))
+
+        # 組み合わせの数
+        S = len(s)
+
+        # 組み合わせの出現回数
+        # ここでfactorial(self.J)で割ってしまうと丸め誤差が出てるので、あとで割る
+        weight = factorial(S) * factorial(self.J - S - 1)
+
+        # 限界貢献度
+        marginal_contribution = (
+            self.expected_values[s_union_j] - self.expected_values[s]
+        )
+
+        return weight * marginal_contribution
+
+    def shapley_additive_explanations(self, id_to_compute: int) -> None:
+        """SHAP値を求める
+
+        Args:
+            id_to_compute: SHAPを計算したいインスタンス
+        """
+
+        # SHAPを計算したいインスタンス
+        self.i = id_to_compute
+
+        # すべての組み合わせに対して予測値を計算
+        # 先に計算しておくことで同じ予測を繰り返さずに済む
+        self.expected_values = {
+            s: self._get_expected_value(s) for s in self.subsets
+        }
+
+        # ひとつひとつの特徴量に対するSHAP値を計算
+        shap_values = np.zeros(self.J)
+        for j in range(self.J):
+            # 限界貢献度の加重平均を求める
+            # 特徴量jが含まれる組み合わせを全部もってきて
+            # 特徴量jがない場合の予測値との差分を見る
+            shap_values[j] = np.sum([
+                self._calc_weighted_marginal_contribution(j, s_union_j)
+                for s_union_j in self.subsets
+                if j in s_union_j
+            ]) / factorial(self.J)
+
+        # データフレームとしてまとめる
+        self.df_shap = pd.DataFrame(
+            data={
+                "var_name": self.var_names,
+                "feature_value": self.X[id_to_compute],
+                "shap_value": shap_values,
+            }
+        )
+
+    def plot(self) -> None:
+        """SHAPを可視化"""
+
+        # 下のデータフレームを書き換えないようコピー
+        df = self.df_shap.copy()
+
+        # グラフ用のラベルを作成
+        df['label'] = [
+            f"{x} = {y:.2f}" for x, y in zip(df.var_name, df.feature_value)
+        ]
+
+        # SHAP値が高い順に並べ替え
+        df = df.sort_values("shap_value").reset_index(drop=True)
+
+        # 全特徴量の値がときの予測値
+        predicted_value = self.expected_values[self.subsets[-1]]
+
+        # 棒グラフを可視化
+        fig, ax = plt.subplots()
+        ax.barh(df.label, df.shap_value)
+        ax.set(xlabel="SHAP値", ylabel=None)
+        fig.suptitle(f"SHAP値 \n(Baseline: {self.baseline:.2f}, Prediction: {predicted_value:.2f}, Difference: {predicted_value - self.baseline:.2f})")
+
+        fig.show()
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+# SHAPのインスタンスを作成
+shap = ShapleyAdditiveExplanations(rf, X_test, ["X0", "X1"])
+
+# インスタンス1に対してSHAP値を計算
+shap.shapley_additive_explanations(id_to_compute=1)
+
+# SHAP値を出力
+print(shap.df_shap)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+  var_name  feature_value  shap_value
+0       X0          -0.78        0.02
+1       X1           0.65        0.62
+#+end_example
+
+#+begin_src jupyter-python :exports both
+# A, B, Cから2つを選ぶ組み合わせ
+print(list(combinations(["A", "B", "C"], 2)))
+#+end_src
+
+#+RESULTS:
+: [('A', 'B'), ('A', 'C'), ('B', 'C')]
+
+#+begin_src jupyter-python :exports both
+# 特徴量X0、X1の分かっている組み合わせ
+print(shap.subsets)
+#+end_src
+
+#+RESULTS:
+: [(), (0,), (1,), (0, 1)]
+
+#+begin_src jupyter-python :exports both
+# 特定の特徴量が分かっている場合の予測値を計算
+print({s: shap._get_expected_value(s) for s in shap.subsets})
+#+end_src
+
+#+RESULTS:
+: {(): 0.047955112724797695, (0,): 0.053784643984172646, (1,): 0.6519497702656634, (0, 1): 0.6849473377476549}
+
+#+begin_src jupyter-python :exports both
+# 特徴量X1に対するSHAP値を計算
+j = 1
+np.sum([
+    shap._calc_weighted_marginal_contribution(j, s_union_j)
+    for s_union_j in shap.subsets
+    if j in s_union_j
+]) / factorial(shap.J)
+#+end_src
+
+#+RESULTS:
+: 0.617578675652174
+
+#+begin_src jupyter-python :exports both :file ./images/6-5-2.png :results output file
+# SHAP値を計算
+shap.shapley_additive_explanations(id_to_compute=1)
+
+# SHAP値を可視化
+shap.plot()
+#+end_src
+
+#+RESULTS:
+[[file:./images/6-5-2.png]]
+
+** 6.6 実データでの分析
+*** 6.6.1 SHAPパッケージの導入
+#+begin_src jupyter-python :exports both
+import joblib
+
+
+# データと学習済みモデルを読み込む
+X_train, X_test, y_train, y_test = joblib.load("../data/boston_housing.pkl")
+rf = joblib.load("../model/boston_housing_rf.pkl")
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+import shap
+
+
+# SHAP値を計算するためのexplainerを作成
+explainer = shap.TreeExplainer(
+    model=rf,  # 学習済みモデル
+    data=X_test,  # SHAPを計算するためのデータ
+    feature_perturbation="interventional",  # 推奨
+)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+# SHAP値を計算
+shap_values = explainer(X_test)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+# インスタンス0の情報。表示されていないが変数名なども格納されている
+shap_values[0]
+#+end_src
+
+#+RESULTS:
+#+begin_example
+.values =
+array([ 3.72177514e-01,  3.52722114e-03, -8.48893190e-02, -3.47466654e-03,
+        2.17689436e-01, -7.51764897e-01, -1.54057020e-01, -7.27876371e-03,
+        7.51510364e-04,  1.04005248e-01,  3.86730953e-01,  3.70339397e-02,
+        1.44721910e+00])
+
+.base_values =
+21.271510000000003
+
+.data =
+array([9.1780e-02, 0.0000e+00, 4.0500e+00, 0.0000e+00, 5.1000e-01,
+       6.4160e+00, 8.4100e+01, 2.6463e+00, 5.0000e+00, 2.9600e+02,
+       1.6600e+01, 3.9550e+02, 9.0400e+00])
+#+end_example
+
+*** 6.6.2 SHAP値の可視化
+#+begin_src jupyter-python :exports both :file ./images/6-6-2a.png :results output file
+# インスタンス0のSHAP値を可視化
+shap.plots.waterfall(shap_values[0])
+#+end_src
+
+#+RESULTS:
+[[file:./images/6-6-2a.png]]
+
+#+begin_src jupyter-python :exports both :file ./images/6-6-2b.png :results output file
+# インスタンス1のSHAP値を可視化
+shap.waterfall_plot(shap_values[1])
+#+end_src
+
+#+RESULTS:
+[[file:./images/6-6-2b.png]]
+
+** 6.7 ミクロからマクロへ
+*** 6.7.1 SHAPによる特徴量重要度の可視化
+#+begin_src jupyter-python :exports both :file ./images/6-7-1a.png :results output file
+# 棒グラフで重要度を可視化
+shap.plots.bar(shap_values=shap_values)
+#+end_src
+
+#+RESULTS:
+[[file:./images/6-7-1a.png]]
+
+#+begin_src jupyter-python :exports both :file ./images/6-7-1b.png :results output file
+# beeswarm plotで重要度を可視化
+shap.plots.beeswarm(shap_values)
+#+end_src
+
+#+RESULTS:
+[[file:./images/6-7-1b.png]]
+
+*** 6.7.2 SHAPによるPDの可視化
+#+begin_src jupyter-python :exports both :file ./images/6-7-2a.png :results output file
+# SHAPによるPDを可視化
+shap.plots.scatter(shap_values[:, "LSTAT"], color=shap_values)
+#+end_src
+
+#+RESULTS:
+[[file:./images/6-7-2a.png]]
+
+#+begin_src jupyter-python :exports both
+def generate_simulation_data():
+    """シミュレーションデータを生成し、訓練データとテストデータに分割"""
+
+    # シミュレーションの設定
+    N = 1000
+
+    # X0とX1は一様分布から生成
+    x0 = np.random.uniform(-1, 1, N)
+    x1 = np.random.uniform(-1, 1, N)
+    # 二項分布の試行回数を1にすると成功確率0.5のベルヌーイ分布と一致
+    x2 = np.random.binomial(1, 0.5, N)
+    # ノイズは正規分布からデータを生成
+    epsilon = np.random.normal(0, 0.1, N)
+
+    # 特徴量をまとめる
+    X = np.column_stack((x0, x1, x2))
+
+    # 線形和で目的変数を作成
+    y = x0 - 5 * x1 + 10 * x1 * x2 + epsilon
+
+    return train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+# シミュレーションデータを生成
+X_train, X_test, y_train, y_test = generate_simulation_data()
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both
+# Random Forestで予測モデルを構築
+rf = RandomForestRegressor(n_jobs=-1, random_state=42).fit(X_train, y_train)
+
+# 特徴量の名前がわかると便利なのでデータフレームにする
+X_test = pd.DataFrame(X_test, columns=["X0", "X1", "X2"])
+
+# explainerを作成
+explainer = shap.TreeExplainer(rf, X_test)
+
+# SHAP値を計算
+shap_values = explainer(X_test)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src jupyter-python :exports both :file ./images/6-7-2b.png :results output file
+# SHAPによるPDを可視化
+shap.plots.scatter(shap_values[:, "X1"], color=shap_values)
+#+end_src
+
+#+RESULTS:
+[[file:./images/6-7-2b.png]]
